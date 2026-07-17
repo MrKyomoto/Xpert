@@ -1,37 +1,89 @@
 import os
-import importlib.util
-from typing import Dict, Any, List
-from code.tools.registry import registry
+from typing import List, Dict, Optional
+
+SKILLS_BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills")
+
+
+class SkillInfo:
+    """一个技能的元信息（名称+描述），不含完整内容。"""
+    def __init__(self, role_dir: str, name: str, description: str, filepath: str):
+        self.role_dir = role_dir
+        self.name = name
+        self.description = description
+        self.filepath = filepath
+
+    def __repr__(self):
+        return f"[{self.role_dir}] {self.name}: {self.description[:40]}..."
+
 
 class SkillManager:
-    def __init__(self, skills_dir: str = "code/skills"):
-        self.skills_dir = skills_dir
-        self.loaded_skills: Dict[str, Any] = {}
-        
-    def discover_and_load(self):
-        """Discover and load all skills in the skills directory."""
-        if not os.path.exists(self.skills_dir):
+    """Skill 管理器。
+
+    - skills/{role_id}/_system.md 自动加载为 system prompt
+    - benefits.md 等按需技能只索引名称+描述，LLM 需时通过 load_skill 注入
+    """
+
+    SYSTEM_FILE = "_system.md"
+
+    def __init__(self, role_id: str):
+        self.role_id = role_id
+        self._index: List[SkillInfo] = []
+        self._loaded_content: Dict[str, str] = {}
+        self._build_index()
+
+    def _build_index(self):
+        role_dir = os.path.join(SKILLS_BASE, self.role_id)
+        if not os.path.isdir(role_dir):
             return
-            
-        for file in os.listdir(self.skills_dir):
-            if file.endswith(".py") and file != "__init__.py" and file != "manager.py":
-                module_name = file[:-3]
-                self.load_skill(module_name)
-                
-    def load_skill(self, name: str):
-        """Load a specific skill by name."""
-        file_path = os.path.join(self.skills_dir, f"{name}.py")
-        if not os.path.exists(file_path):
-            return False
-            
-        spec = importlib.util.spec_from_file_location(f"skills.{name}", file_path)
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            
-            # If the module has a setup function, call it with the registry
-            if hasattr(module, "setup"):
-                module.setup(registry)
-                self.loaded_skills[name] = module
-                return True
-        return False
+        for fname in sorted(os.listdir(role_dir)):
+            if not fname.endswith(".md") or fname == self.SYSTEM_FILE:
+                continue
+            filepath = os.path.join(role_dir, fname)
+            name = fname[:-3]
+            with open(filepath, "r", encoding="utf-8") as f:
+                desc = ""
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#"):
+                        desc = stripped[:120]
+                        break
+            self._index.append(SkillInfo(self.role_id, name, desc, filepath))
+
+    def load_system(self) -> str:
+        """加载 _system.md 作为 system prompt。"""
+        path = os.path.join(SKILLS_BASE, self.role_id, self.SYSTEM_FILE)
+        if not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+    @property
+    def index(self) -> List[SkillInfo]:
+        return list(self._index)
+
+    def index_text(self) -> str:
+        if not self._index:
+            return f"（角色 {self.role_id} 暂无可用技能）"
+        lines = [f"角色 {self.role_id} 可用技能:"]
+        for s in self._index:
+            lines.append(f"  - {s.name}: {s.description}")
+        return "\n".join(lines)
+
+    def load_skill(self, name: str) -> Optional[str]:
+        if name in self._loaded_content:
+            return self._loaded_content[name]
+        for s in self._index:
+            if s.name == name:
+                with open(s.filepath, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                self._loaded_content[name] = content
+                return content
+        return None
+
+    def loaded_skills_text(self) -> str:
+        if not self._loaded_content:
+            return ""
+        parts = [f"## 已加载技能 ({self.role_id})"]
+        for name, content in self._loaded_content.items():
+            parts.append(f"### {name}\n{content}")
+        return "\n\n".join(parts)

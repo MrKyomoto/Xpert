@@ -2,37 +2,32 @@ import json, datetime, re
 from typing import List, Dict, Tuple, Optional
 
 from code.agent.core import Agent
-from code.utils.prompt_loader import load_prompt
 
 
 class PolishRound:
-    """一次完整的 Expert→Judge 迭代记录。"""
     def __init__(self, round_num: int, lesson: str, feedback: Optional[str]):
         self.round = round_num
         self.lesson = lesson
-        self.feedback = feedback  # Judge 的反馈（上一轮），第一轮为 None
+        self.feedback = feedback
+        self.thinking: Optional[str] = None
         self.polished: Optional[str] = None
         self.judge_result: Optional[dict] = None
 
     def to_discussion(self) -> list:
         entries = []
-        # Expert 发言
-        expert_content = f"第{self.round}轮输出"
+        expert_content = f"【思考】\n{self.thinking or '(无)'}\n\n【输出】\n{self.polished or '(无)'}"
         entries.append({
             "round": self.round, "role_id": "r_expert",
             "content": expert_content, "refers_to": None
         })
         if self.feedback:
             entries[-1]["refers_to"] = f"r{self.round-1}:r_judge"
-        # Judge 发言
         if self.judge_result:
+            s = self.judge_result['scores']
             judge_content = (
-                f"评分: A={self.judge_result['scores']['A']['score']}, "
-                f"B={self.judge_result['scores']['B']['score']}, "
-                f"C={self.judge_result['scores']['C']['score']}, "
-                f"D={self.judge_result['scores']['D']['score']}, "
-                f"E={self.judge_result['scores']['E']['score']}, "
-                f"F={self.judge_result['scores']['F']['score']}, "
+                f"评分: A={s['A']['score']}, B={s['B']['score']}, "
+                f"C={s['C']['score']}, D={s['D']['score']}, "
+                f"E={s['E']['score']}, F={s['F']['score']}, "
                 f"总分={self.judge_result['total_score']}\n"
                 f"反馈: {self.judge_result['overall_feedback']}"
             )
@@ -45,20 +40,16 @@ class PolishRound:
 
 
 class Orchestrator:
-    """驱动 Expert-Judge 多轮迭代打磨的核心调度器。"""
+    """Expert-Judge 多轮迭代打磨调度器。"""
 
     MAX_ITERATIONS = 5
 
     def __init__(self, model: Optional[str] = None):
-        expert_prompt = load_prompt("expert_system")
-        judge_prompt = load_prompt("judge_system")
-
-        self.expert = Agent(name="教案打磨专家", role_prompt=expert_prompt)
-        self.judge = Agent(name="评审专家", role_prompt=judge_prompt, use_tools=False)
+        self.expert = Agent(name="教案打磨专家", role_id="r_expert")
+        self.judge = Agent(name="评审专家", role_id="r_judge", use_tools=False)
         self.model = model
 
     def run(self, lesson: str, student_id: str, sample_id: str) -> Tuple[str, dict]:
-        """执行多轮打磨循环，返回 (最终教案, process_dict)。"""
         rounds: List[PolishRound] = []
         current_lesson = lesson
         feedback = None
@@ -68,61 +59,103 @@ class Orchestrator:
 
         for i in range(1, self.MAX_ITERATIONS + 1):
             pr = PolishRound(i, current_lesson, feedback)
-            print(f"\n▶ 第 {i} 轮 — Expert 打磨中...\n")
+            print(f"\n▶ 第 {i} 轮 — Expert 思考中...\n")
 
-            # ── Expert 打磨 ──
             expert_msg = f"请打磨以下教案：\n\n{current_lesson}"
             if feedback:
                 expert_msg = f"以下是上一轮评审反馈，请据此改进教案：\n\n{feedback}\n\n---\n\n当前教案：\n\n{current_lesson}"
 
-            polished_chunks = []
+            # 静默收集完整响应，parse 后再展示思考部分
+            full_chunks = []
             for chunk in self.expert.chat_stream(expert_msg):
-                print(chunk, end="", flush=True)
-                polished_chunks.append(chunk)
-            print()
-            pr.polished = "".join(polished_chunks).strip()
+                full_chunks.append(chunk)
+            full = "".join(full_chunks)
 
-            # ── Judge 评审 ──
+            # 切分思考 + 教案：优先用 ---POLISHED--- 标记，其次用第一个 # 标题
+            polished_marker = "---POLISHED---"
+            if polished_marker in full:
+                parts = full.split(polished_marker, 1)
+                thinking = parts[0].strip()
+                polished = parts[1].strip()
+            else:
+                # 兜底：找到第一个 "# " 一级标题，之前是思考，之后是教案
+                heading_match = re.search(r'\n(# .+?)\n', full)
+                if heading_match:
+                    idx = heading_match.start()
+                    thinking = full[:idx].strip()
+                    polished = full[idx:].strip()
+                else:
+                    thinking = full
+                    polished = full
+
+            pr.thinking = thinking
+            pr.polished = polished
+
+            # 只展示思考过程
+            print(thinking)
+
+            # Judge 评审（失败重试1次）
             print(f"\n  Judge 评审中...")
             judge_prompt = f"请评审以下教案并返回 JSON：\n\n{pr.polished}"
-
             judge_response = self.judge.chat(judge_prompt)
             judge_data = self._parse_judge_response(judge_response)
+
+            # 如果解析失败（0分fallback），重试一次
+            if judge_data.get("total_score", 0) == 0 and not judge_response:
+                print(f"  评审解析失败，重试...")
+                judge_response = self.judge.chat(judge_prompt)
+                judge_data = self._parse_judge_response(judge_response)
+
             pr.judge_result = judge_data
 
             total = judge_data.get("total_score", 0)
             print(f"  总分: {total}/100 | should_stop: {judge_data.get('should_stop', False)}")
-            print(f"  评分明细: A={judge_data['scores']['A']['score']}, B={judge_data['scores']['B']['score']}, "
-                  f"C={judge_data['scores']['C']['score']}, D={judge_data['scores']['D']['score']}, "
-                  f"E={judge_data['scores']['E']['score']}, F={judge_data['scores']['F']['score']}")
+            s = judge_data['scores']
+            print(f"  评分明细: A={s['A']['score']}, B={s['B']['score']}, "
+                  f"C={s['C']['score']}, D={s['D']['score']}, "
+                  f"E={s['E']['score']}, F={s['F']['score']}")
 
             rounds.append(pr)
 
-            # ── 终止判断 ──
             if judge_data.get("should_stop", False):
                 print(f"\n  ✓ 达到终止条件，打磨完成。")
                 break
 
-            # 准备下一轮输入
             current_lesson = pr.polished
             feedback = judge_data.get("overall_feedback", "")
 
-        # ── 取最后一轮结果 ──
+        # 最终输出打磨后教案
         final_round = rounds[-1]
         final_lesson = final_round.polished
-        final_scores = final_round.judge_result["scores"] if final_round.judge_result else {}
+        print("\n" + "=" * 60)
+        print("最终教案:\n")
+        print(final_lesson)
 
-        # ── 构建 process.json ──
+        # 构建 process.json
         discussion = []
         modifications = []
         mod_count = 0
 
         for pr in rounds:
             discussion.extend(pr.to_discussion())
+            if pr.thinking:
+                for line in pr.thinking.split("\n"):
+                    t = line.strip()
+                    if not t:
+                        continue
+                    if re.match(r'^[\d•\-\*]+\s*[.、)）．]', t):
+                        mod_count += 1
+                        modifications.append({
+                            "mod_id": f"M{mod_count:02d}",
+                            "location": "全篇",
+                            "before_summary": "原始教案相关部分",
+                            "after_summary": re.sub(r'^[\d•\-\*]+[.、)）．\s]*', '', t)[:100],
+                            "source_role": "r_expert",
+                            "rationale": t[:200]
+                        })
             if pr.judge_result:
-                for dim_key in ['A', 'B', 'C', 'D', 'E', 'F']:
-                    s = pr.judge_result['scores'].get(dim_key, {})
-                    suggestion = s.get('suggestions', '')
+                for dim_key in 'ABCDEF':
+                    suggestion = pr.judge_result['scores'][dim_key].get('suggestions', '')
                     if suggestion:
                         mod_count += 1
                         modifications.append({
@@ -137,16 +170,14 @@ class Orchestrator:
         if not modifications:
             modifications = [{
                 "mod_id": "M01", "location": "全篇",
-                "before_summary": "原始教案",
-                "after_summary": f"第{len(rounds)}轮打磨后教案",
+                "before_summary": "原始教案", "after_summary": f"第{len(rounds)}轮打磨后教案",
                 "source_role": "r_expert",
                 "rationale": f"经过{len(rounds)}轮 Expert-Judge 迭代打磨"
             }]
 
         process = {
             "meta": {
-                "student_id": student_id,
-                "sample_id": sample_id,
+                "student_id": student_id, "sample_id": sample_id,
                 "timestamp": datetime.datetime.now().astimezone().isoformat()
             },
             "roles": [
@@ -160,39 +191,30 @@ class Orchestrator:
         return final_lesson, process
 
     def _parse_judge_response(self, response: Optional[str]) -> dict:
-        """从 Judge 响应中解析 JSON。"""
         if not response:
             return self._fallback_judge_result("评审响应为空")
-
-        # 尝试直接解析
         try:
             return json.loads(response)
         except json.JSONDecodeError:
             pass
-
-        # 尝试从 ```json 块中提取
         match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\s*\n?```', response, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group(1))
             except json.JSONDecodeError:
                 pass
-
-        # 尝试提取第一个 { }
         match = re.search(r'(\{.*\})', response, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group(1))
             except json.JSONDecodeError:
                 pass
-
-        return self._fallback_judge_result("评审 JSON 解析失败，请检查 Judge prompt 输出格式。")
+        return self._fallback_judge_result("评审 JSON 解析失败")
 
     def _fallback_judge_result(self, reason: str) -> dict:
         max_scores = {"A": 10, "B": 15, "C": 20, "D": 15, "E": 10, "F": 30}
         return {
             "scores": {k: {"score": 0, "max": max_scores[k], "evidence": "", "suggestions": ""} for k in "ABCDEF"},
-            "total_score": 0,
-            "overall_feedback": reason,
-            "should_stop": True
+            "total_score": 0, "overall_feedback": reason,
+            "should_stop": False  # 不因解析失败而终止
         }
