@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 from code.engine.orchestrator import Orchestrator
+from code.utils.logger import capture_output
 
 def parse_args():
     p = argparse.ArgumentParser(description="PBL 教案磨课系统 — Expert-Judge 闭环")
@@ -52,11 +53,19 @@ def write_outputs(out_dir, student_id, sample_id, polished, process):
     print(f"\n  → {md}\n  → {js}")
 
 def main():
+    with capture_output() as log_path:
+        rc = _main()
+    print(f"\nDone. Exit code {rc}")
+    print(f"日志已保存: {log_path}")
+    sys.exit(rc)
+
+
+def _main():
     args = parse_args()
     if not os.getenv("API_KEY") and not os.getenv("OPENAI_API_KEY"):
-        print("FATAL: API_KEY not set", file=sys.stderr); sys.exit(1)
-    if not os.path.exists(args.lesson): print("FATAL: lesson not found", file=sys.stderr); sys.exit(1)
-    if not os.path.exists(args.profile): print("FATAL: profile not found", file=sys.stderr); sys.exit(1)
+        print("FATAL: API_KEY not set", file=sys.stderr); return 1
+    if not os.path.exists(args.lesson): print("FATAL: lesson not found", file=sys.stderr); return 1
+    if not os.path.exists(args.profile): print("FATAL: profile not found", file=sys.stderr); return 1
 
     lesson = read_file(args.lesson)
     profile_text = read_file(args.profile)
@@ -79,13 +88,16 @@ def main():
         print("运行格式自检...")
         result = subprocess.run(
             [sys.executable, validate_script, os.path.abspath(args.out)],
-            capture_output=False
+            capture_output=True, encoding="utf-8", errors="replace"
         )
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
         if result.returncode != 0:
-            sys.exit(1)
+            return 1
 
-    print("\nDone. Exit code 0")
-    sys.exit(0)
+    return 0
 
 if __name__ == "__main__":
     main()
