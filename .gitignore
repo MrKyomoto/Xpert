@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment
+venv/
+.venv/
+
+# Environment (contains API keys)
+.env
+!.env.example
+
+# Project outputs (generated)
+outputs_practice/
+logs/
+report/
+ai_collab/
+
+# OS
+.DS_Store
+Thumbs.db
