@@ -18,8 +18,9 @@
 │   │   └── core.py               # Agent 核心（流式对话 + 工具调用）
 │   ├── memory/
 │   │   └── context.py            # 上下文存储 & tiktoken 自动压缩
-│   ├── tools/
-│   │   └── registry.py           # 工具注册表（自动生成 JSON Schema）
+│   ├── tools/                    # 工具库
+│   │   ├── registry.py           # 工具注册表（自动生成 JSON Schema）
+│   │   └── logger.py             # 日志捕获（sys.stdout Tee）
 │   ├── skills/                   # 技能系统（按角色组织 .md 知识包）
 │   │   ├── manager.py            # 技能管理器：索引 + 按需加载
 │   │   ├── r_expert/             # 打磨专家技能
@@ -29,8 +30,6 @@
 │   │   └── r_judge/              # 评审专家技能
 │   │       ├── _system.md        #   system prompt（自动加载）
 │   │       └── evaluation_rubric.md# 评价量规（附录A）
-│   ├── utils/
-│   │   └── logger.py             # 日志捕获（sys.stdout Tee）
 │   ├── examples/
 │   │   ├── inputs/               # 示例教案（命名: {学号}_{样本ID}.md）
 │   │   │   ├── demo001_MATH01.md # 数学常规课 · 一元一次方程
@@ -59,7 +58,7 @@ run.py
        │   ├─ Expert 加载 skills/r_expert/ (system prompt + 全量技能注入)
        │   ├─ Expert 流式输出 → 只显示思考过程（---POLISHED--- 之前）
        │   ├─ Judge 加载 skills/r_judge/ → 按附录A六维度评分
-       │   ├─ 总分 ≥ 85 或 提升 < 3分 → should_stop
+       │   ├─ 总分 >= 85 或 提升 < 3分 → should_stop
        │   └─ 未达标 / 评审解析失败（重试1次）→ 进入 Round 2
        │
        ├─ Round N: ...（上限 5 轮）
@@ -77,20 +76,20 @@ run.py
 | 组件 | 职责 |
 |------|------|
 | **Expert** | 接收教案原文或上轮反馈，输出改进后完整教案 Markdown |
-| **Judge** | 按附录A六维度（A结构/B内容/C准确/D一致/E语言/F素养）评分，决定 `should_stop` |
-| **Orchestrator** | 控制循环：**总分 ≥ 85 或 提升 < 3 分** 停止，上限5轮 |
-| **SkillManager** | 从 `skills/{role_id}/` 加载 `_system.md` + 全量技能注入 system prompt |
+| **Judge** | 按附录A六维度（A结构/B内容/C准确/D一致/E语言/F素养）评分，决定 should_stop |
+| **Orchestrator** | 控制循环：总分 >= 85 或 提升 < 3 分 停止，上限5轮 |
+| **SkillManager** | 从 skills/{role_id}/ 加载 _system.md + 全量技能注入 system prompt |
 | **Agent** | 统一 LLM 通信层，支持流式/非流式两模式，可选工具调用 |
-| **Logger** | `Tee` 包装 `sys.stdout`，自动保存到 `logs/{时间戳}.log` |
+| **Logger** | Tee 包装 sys.stdout，自动保存到 logs/{时间戳}.log |
 
 ### 终止条件
 
-- `should_stop: true` 当且仅当 **总分 ≥ 85** 或 **相比上一轮总分提升 < 3 分**
+- should_stop: true 当且仅当 **总分 >= 85** 或 **相比上一轮总分提升 < 3 分**
 - Judge 评审 JSON 解析失败时自动重试 1 次，不因解析失败终止
 
 ## Skill 系统设计
 
-`skills/{role_id}/` 是角色的知识包目录：
+skills/{role_id}/ 是角色的知识包目录：
 
 ```
 skills/
@@ -103,9 +102,9 @@ skills/
     └── evaluation_rubric.md← 技能：评价量规（附录A）
 ```
 
-- `_system.md` 自动加载为 Agent 的 system prompt
-- 其他 `.md` 技能文件**全量注入**到 system prompt（文件小，无需工具调用）
-- 新角色只需在 `skills/` 下新建目录 + `_system.md`
+- _system.md 自动加载为 Agent 的 system prompt
+- 其他 .md 技能文件**全量注入**到 system prompt（文件小，无需工具调用）
+- 新角色只需在 skills/ 下新建目录 + _system.md
 
 ## 快速开始
 
@@ -144,40 +143,40 @@ python code/run.py --lesson <path> --profile <path> --out <dir>
 
 | 参数 | 说明 |
 |------|------|
-| `--lesson` | 输入教案 Markdown 路径 |
-| `--profile` | 学情描述 YAML（仅需 `student_id` 字段） |
-| `--out` | 输出目录 |
+| --lesson | 输入教案 Markdown 路径 |
+| --profile | 学情描述 YAML（仅需 student_id 字段） |
+| --out | 输出目录 |
 
-- 退出码: `0` = 成功, 非零 = 失败
-- 输出: `{学号}_{样本ID}_polished.md` + `{学号}_{样本ID}_process.json`
-- 日志: `code/logs/{时间戳}.log`（全量终端输出）
-- 运行结束后自动调用附录 D `validate_submission.py` 进行格式自查
+- 退出码: 0 = 成功, 非零 = 失败
+- 输出: {学号}_{样本ID}_polished.md + {学号}_{样本ID}_process.json
+- 日志: code/logs/{时间戳}.log（全量终端输出）
+- 运行结束后自动调用附录 D validate_submission.py 进行格式自查
 
 ## 核心能力
 
 | 能力 | 实现位置 |
 |------|---------|
-| Expert-Judge 多轮迭代 | `code/engine/orchestrator.py` |
-| Skill 知识包注入 | `code/skills/manager.py` + `code/skills/{role_id}/` |
-| 流式输出（实时显示思考过程） | `code/agent/core.py` — `chat_stream()` |
-| 日志全量记录 | `code/utils/logger.py` — Tee stdout |
-| 上下文管理与自动压缩 | `code/memory/context.py` — tiktoken 计费 |
-| 工具注册与调用 | `code/tools/registry.py` |
-| 附录D 格式自查 | 自动调用 `validate_submission.py` |
+| Expert-Judge 多轮迭代 | code/engine/orchestrator.py |
+| Skill 知识包注入 | code/skills/manager.py + code/skills/{role_id}/ |
+| 流式输出（实时显示思考过程） | code/agent/core.py -- chat_stream() |
+| 日志全量记录 | code/tools/logger.py -- Tee stdout |
+| 上下文管理与自动压缩 | code/memory/context.py -- tiktoken 计费 |
+| 工具注册与调用 | code/tools/registry.py |
+| 附录D 格式自查 | 自动调用 validate_submission.py |
 
 ## 示例教案
 
-`code/examples/inputs/` 下预置了 4 份教案（命名符合附录D规范）：
+code/examples/inputs/ 下预置了 4 份教案（命名符合附录D规范）：
 
 | 文件 | 课型 | 学科 |
 |------|------|------|
-| `demo001_MATH01.md` | 常规课 | 数学 · 一元一次方程 |
-| `demo001_MATH02.md` | PBL 项目课 | 数学 · 皮筋测力计 |
-| `demo001_CHN01.md` | PBL 项目课 | 语文 · 如果山水会说话 |
-| `demo001_BIO01.md` | PBL 项目课 | 生物 · 防治校园飞絮 |
+| demo001_MATH01.md | 常规课 | 数学 . 一元一次方程 |
+| demo001_MATH02.md | PBL 项目课 | 数学 . 皮筋测力计 |
+| demo001_CHN01.md | PBL 项目课 | 语文 . 如果山水会说话 |
+| demo001_BIO01.md | PBL 项目课 | 生物 . 防治校园飞絮 |
 
 ## 后续方向（创新点）
 
-1. **多专家角色蒸馏** — 从金标准案例中归纳差异化专家角色，在 `skills/` 下新建目录，Expert 扩展为多 Agent 圆桌研讨
+1. **多专家角色蒸馏** — 从金标准案例中归纳差异化专家角色，在 skills/ 下新建目录，Expert 扩展为多 Agent 圆桌研讨
 2. **磨课过程可视化** — process.json 驱动的时间线/对话流展示
 3. **迭代历史回溯** — 支持查看每轮打分趋势与修改轨迹
