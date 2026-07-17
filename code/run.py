@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 from code.engine.orchestrator import Orchestrator
-from code.utils.logger import capture_output
+from code.tools.logger import capture_output
 
 def parse_args():
     p = argparse.ArgumentParser(description="PBL 教案磨课系统 — Expert-Judge 闭环")
