@@ -4,7 +4,14 @@ run.py — 统一 CLI 入口 (Appendix D 运行契约)
 Usage: python run.py --lesson <path> --profile <path> --out <dir>
 Exit code: 0 = success, 非零 = fail
 """
-import sys, os, json, argparse, datetime, re, subprocess
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+import yaml
 if sys.stdout.encoding and sys.stdout.encoding.upper() in ('GBK', 'GB2312', 'CP936'):
     sys.stdout.reconfigure(errors='replace')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,12 +43,23 @@ def extract_sample_id(path):
     return safe or "lesson"
 
 def parse_student_id(profile_text):
-    for line in profile_text.splitlines():
-        if line.strip().startswith("student_id:"):
-            val = line.split(":", 1)[1].strip().strip('"').strip("'")
-            if val and re.match(r'^[A-Za-z0-9]+$', val):
-                return val
+    profile = parse_profile(profile_text)
+    value = profile.get("student_id")
+    if value is not None:
+        val = str(value).strip()
+        if val and re.fullmatch(r"[A-Za-z0-9]+", val):
+            return val
     return "unknown"
+
+
+def parse_profile(profile_text):
+    try:
+        data = yaml.safe_load(profile_text) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"profile YAML 解析失败: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("profile YAML 顶层必须是对象")
+    return data
 
 def write_outputs(out_dir, student_id, sample_id, polished, process):
     os.makedirs(out_dir, exist_ok=True)
@@ -53,8 +71,13 @@ def write_outputs(out_dir, student_id, sample_id, polished, process):
     print(f"\n  → {md}\n  → {js}")
 
 def main():
+    rc = 1
     with capture_output() as log_path:
-        rc = _main()
+        try:
+            rc = _main()
+        except Exception as exc:
+            print(f"FATAL: {exc}", file=sys.stderr)
+            rc = 1
     print(f"\nDone. Exit code {rc}")
     print(f"日志已保存: {log_path}")
     sys.exit(rc)
@@ -69,12 +92,18 @@ def _main():
 
     lesson = read_file(args.lesson)
     profile_text = read_file(args.profile)
+    profile = parse_profile(profile_text)
     sample_id = extract_sample_id(args.lesson)
     student_id = parse_student_id(profile_text)
 
     # ── Expert-Judge 多轮打磨 ──
     orchestrator = Orchestrator()
-    polished, process = orchestrator.run(lesson, student_id, sample_id)
+    polished, process = orchestrator.run(
+        lesson,
+        student_id,
+        sample_id,
+        profile=profile,
+    )
 
     write_outputs(args.out, student_id, sample_id, polished, process)
 

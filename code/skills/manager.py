@@ -1,5 +1,6 @@
+import hashlib
 import os
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 SKILLS_BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills")
 
@@ -14,6 +15,14 @@ class SkillInfo:
 
     def __repr__(self):
         return f"[{self.role_dir}] {self.name}: {self.description[:40]}..."
+
+    def sha256(self) -> str:
+        """Return a stable digest without exposing the local absolute path."""
+        digest = hashlib.sha256()
+        with open(self.filepath, "rb") as file:
+            for chunk in iter(lambda: file.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
 
 class SkillManager:
@@ -61,6 +70,10 @@ class SkillManager:
     def index(self) -> List[SkillInfo]:
         return list(self._index)
 
+    @property
+    def available_names(self) -> List[str]:
+        return [skill.name for skill in self._index]
+
     def index_text(self) -> str:
         if not self._index:
             return f"（角色 {self.role_id} 暂无可用技能）"
@@ -79,6 +92,22 @@ class SkillManager:
                 self._loaded_content[name] = content
                 return content
         return None
+
+    def require_skill(self, name: str) -> str:
+        """Load a configured skill or fail fast on a misspelled plan entry."""
+        content = self.load_skill(name)
+        if content is None:
+            available = ", ".join(self.available_names) or "无"
+            raise ValueError(
+                f"角色 {self.role_id} 不存在 Skill '{name}'；可用 Skill: {available}"
+            )
+        return content
+
+    def skill_digest(self, name: str) -> str:
+        for skill in self._index:
+            if skill.name == name:
+                return skill.sha256()
+        raise ValueError(f"角色 {self.role_id} 不存在 Skill '{name}'")
 
     def loaded_skills_text(self) -> str:
         if not self._loaded_content:
