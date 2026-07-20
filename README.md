@@ -52,7 +52,21 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-在 `.env` 中配置 `API_KEY` 或 `OPENAI_API_KEY`。可选配置包括 `API_BASE`、`MODEL`、`MAX_TOKENS`、`API_TIMEOUT`、`API_RETRIES`、`MAX_CONTEXT_TOKENS` 和 `COMPRESSION_THRESHOLD`。
+在 `.env` 中配置 `API_KEY` 或 `OPENAI_API_KEY`。主要请求配置如下：
+
+| 配置 | 默认值 | 作用 |
+|---|---:|---|
+| `MODEL` | `gpt-4o` | 所有圆桌角色使用的模型 |
+| `MAX_TOKENS` | `8000` | 首次请求的最大输出预算 |
+| `MAX_RETRY_TOKENS` | `16000` | `finish_reason=length` 时自适应提高的上限 |
+| `API_TIMEOUT` | `300` | 单次请求读写超时（秒） |
+| `API_CONNECT_TIMEOUT` | `20` | 建立连接超时（秒） |
+| `API_RETRIES` | `5` | 首次请求之外的最大重试次数 |
+| `API_RETRY_BASE_DELAY` | `1` | 指数退避初始秒数 |
+| `API_RETRY_MAX_DELAY` | `30` | 单次退避上限 |
+| `API_RETRY_JITTER` | `0.25` | 避免并发请求同步重试的抖动比例 |
+
+系统对连接失败、超时、HTTP 408/409/425/429/5xx、空 choices 和空 content 进行有限重试，并优先遵循服务端 `Retry-After`。400/401/403/404/422、明确拒绝和内容过滤会立即失败。被 token 上限截断的响应不会进入上下文；系统提高输出预算后重新请求。重试日志只记录角色、模型、状态码、request ID、finish reason、token 用量和耗时，不记录 API Key 或完整 Prompt。
 
 ## 运行
 
@@ -82,4 +96,4 @@ python "PBL多智能体实践课题/附录/附录D_提交与运行契约/validat
   "PBL多智能体实践课题/附录/附录D_提交与运行契约/_selftest/sample_ok"
 ```
 
-测试覆盖按需加载与 PBL 隔离、示例课型识别、YAML 解析、停止规则、结构化意见与裁决解析、日志防覆盖和模拟圆桌端到端流程。
+测试覆盖按需加载与 PBL 隔离、示例课型识别、YAML 解析、停止规则、结构化意见与裁决解析、日志防覆盖、模拟圆桌端到端流程，以及真实 SDK 对 429、超时、空响应、截断、永久错误、流式中断和退避策略的处理。

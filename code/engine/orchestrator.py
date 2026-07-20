@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from code.agent.core import Agent
+from code.config import config
 
 
 EXPERT_ROLES = [
@@ -245,6 +246,12 @@ class Orchestrator:
             f"\n识别课型: {lesson_type} "
             f"(subject={context['subject']}, stage={context['stage']}, "
             f"confidence={context['confidence']:.2f})"
+        )
+        print(
+            f"LLM 配置: model={getattr(self.judge, 'model', self.model or config.MODEL)}, "
+            f"timeout={config.API_TIMEOUT:g}s, "
+            f"max_attempts={config.API_RETRIES + 1}, "
+            f"max_tokens={config.MAX_TOKENS}"
         )
         for role_id, names in loaded_skills_by_role.items():
             print(f"  - {role_id} 加载 Skill: {', '.join(names) if names else '无'}")

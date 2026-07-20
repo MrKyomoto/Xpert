@@ -1,8 +1,13 @@
 import json
+import random
+import sys
 import time
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional
 
-from openai import OpenAI
+import httpx
+from openai import APIConnectionError, APIStatusError, OpenAI
 
 from code.config import config
 from code.memory.context import ContextManager
@@ -12,6 +17,25 @@ from code.tools.registry import registry
 
 class LLMCallError(RuntimeError):
     """Raised when an LLM request cannot produce a usable response."""
+
+
+class LLMResponseError(LLMCallError):
+    """A syntactically successful API call with no usable assistant payload."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        finish_reason: Optional[str] = None,
+        retryable: bool = True,
+        completion_tokens: Optional[int] = None,
+        reasoning_tokens: Optional[int] = None,
+    ):
+        super().__init__(message)
+        self.finish_reason = finish_reason
+        self.retryable = retryable
+        self.completion_tokens = completion_tokens
+        self.reasoning_tokens = reasoning_tokens
 
 
 class Agent:
@@ -45,7 +69,13 @@ class Agent:
             self.client = OpenAI(
                 api_key=config.API_KEY,
                 base_url=config.API_BASE,
-                timeout=config.API_TIMEOUT,
+                timeout=httpx.Timeout(
+                    config.API_TIMEOUT,
+                    connect=config.API_CONNECT_TIMEOUT,
+                ),
+                # Keep one retry owner.  The application policy below also
+                # validates HTTP-200 responses with empty choices/content,
+                # which the SDK's transport-only retry cannot cover.
                 max_retries=0,
             )
 
@@ -116,14 +146,22 @@ class Agent:
         """
         self.context.add_message("user", message)
         last_error: Optional[Exception] = None
+        kwargs = self._request_kwargs(stream=True)
+        total_attempts = config.API_RETRIES + 1
+        attempts_made = 0
 
-        for attempt in range(config.API_RETRIES + 1):
+        for attempt in range(total_attempts):
+            attempts_made = attempt + 1
+            attempt_started = time.monotonic()
             try:
-                kwargs = self._request_kwargs(stream=True)
                 stream = self.client.chat.completions.create(**kwargs)
                 chunks: List[str] = []
+                finish_reason: Optional[str] = None
                 for event in stream:
-                    delta = event.choices[0].delta if event.choices else None
+                    choice = event.choices[0] if event.choices else None
+                    if choice is not None and getattr(choice, "finish_reason", None):
+                        finish_reason = str(choice.finish_reason)
+                    delta = choice.delta if choice is not None else None
                     if delta is None:
                         continue
                     content = getattr(delta, "content", None)
@@ -135,18 +173,43 @@ class Agent:
                         )
 
                 full_content = "".join(chunks)
+                if finish_reason == "length":
+                    raise LLMResponseError(
+                        "LLM streaming response was truncated by the token limit",
+                        finish_reason=finish_reason,
+                    )
+                if finish_reason == "content_filter":
+                    raise LLMResponseError(
+                        "LLM streaming response was blocked by content filtering",
+                        finish_reason=finish_reason,
+                        retryable=False,
+                    )
                 if not full_content.strip():
-                    raise LLMCallError("LLM returned an empty streaming response")
+                    raise LLMResponseError(
+                        "LLM returned an empty streaming response "
+                        f"(finish_reason={finish_reason or 'unknown'})",
+                        finish_reason=finish_reason,
+                        retryable=finish_reason != "content_filter",
+                    )
                 self.context.add_message("assistant", full_content)
                 yield from chunks
                 return
-            except Exception as exc:  # OpenAI exposes several transport subclasses
+            except Exception as exc:
                 last_error = exc
-                if attempt < config.API_RETRIES:
-                    time.sleep(min(2 ** attempt, 4))
+                if isinstance(exc, LLMResponseError):
+                    self._increase_token_budget(kwargs, exc)
+                if not self._should_retry(exc) or attempt >= total_attempts - 1:
+                    break
+                self._wait_before_retry(
+                    exc,
+                    attempt,
+                    total_attempts,
+                    time.monotonic() - attempt_started,
+                )
 
         raise LLMCallError(
-            f"{self.name} API 调用在 {config.API_RETRIES + 1} 次尝试后失败: {last_error}"
+            f"{self.name} API 调用在 {attempts_made} 次尝试后失败: "
+            f"{self._error_detail(last_error)}"
         ) from last_error
 
     def _request_kwargs(
@@ -175,16 +238,238 @@ class Agent:
 
     def _create_with_retry(self, kwargs: Dict[str, Any]) -> Any:
         last_error: Optional[Exception] = None
-        for attempt in range(config.API_RETRIES + 1):
+        request_kwargs = dict(kwargs)
+        total_attempts = config.API_RETRIES + 1
+        attempts_made = 0
+        for attempt in range(total_attempts):
+            attempts_made = attempt + 1
+            attempt_started = time.monotonic()
             try:
-                return self.client.chat.completions.create(**kwargs)
+                response = self.client.chat.completions.create(**request_kwargs)
+                self._validate_completion_response(response)
+                return response
             except Exception as exc:
                 last_error = exc
-                if attempt < config.API_RETRIES:
-                    time.sleep(min(2 ** attempt, 4))
+                if isinstance(exc, LLMResponseError):
+                    self._increase_token_budget(request_kwargs, exc)
+                if not self._should_retry(exc) or attempt >= total_attempts - 1:
+                    break
+                self._wait_before_retry(
+                    exc,
+                    attempt,
+                    total_attempts,
+                    time.monotonic() - attempt_started,
+                )
         raise LLMCallError(
-            f"{self.name} API 调用在 {config.API_RETRIES + 1} 次尝试后失败: {last_error}"
+            f"{self.name} API 调用在 {attempts_made} 次尝试后失败: "
+            f"{self._error_detail(last_error)}"
         ) from last_error
+
+    def _validate_completion_response(self, response: Any) -> None:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise LLMResponseError(
+                "API response has no choices; " + self._response_metadata(response)
+            )
+
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        finish_reason = getattr(choice, "finish_reason", None)
+        finish_text = str(finish_reason) if finish_reason is not None else None
+        if message is None:
+            raise LLMResponseError(
+                "API response choice has no message; "
+                + self._response_metadata(response, finish_text),
+                finish_reason=finish_text,
+            )
+
+        if getattr(message, "tool_calls", None):
+            return
+        if finish_text == "length":
+            raise LLMResponseError(
+                "API response was truncated by the token limit; "
+                + self._response_metadata(response, finish_text),
+                finish_reason=finish_text,
+            )
+        if finish_text == "content_filter":
+            raise LLMResponseError(
+                "API response was blocked by content filtering; "
+                + self._response_metadata(response, finish_text),
+                finish_reason=finish_text,
+                retryable=False,
+            )
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return
+
+        refusal = getattr(message, "refusal", None)
+        retryable = finish_text not in {"content_filter"} and not bool(refusal)
+        reasoning = getattr(message, "reasoning_content", None)
+        reasoning_length = len(reasoning) if isinstance(reasoning, str) else 0
+        usage = getattr(response, "usage", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
+        detail = self._response_metadata(response, finish_text)
+        if reasoning_length:
+            detail += f", hidden_reasoning_chars={reasoning_length}"
+        if refusal:
+            detail += ", refusal=true"
+        raise LLMResponseError(
+            "API returned an empty assistant response; " + detail,
+            finish_reason=finish_text,
+            retryable=retryable,
+            completion_tokens=completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+
+    @staticmethod
+    def _response_metadata(
+        response: Any,
+        finish_reason: Optional[str] = None,
+    ) -> str:
+        response_id = getattr(response, "id", None) or "unknown"
+        request_id = getattr(response, "_request_id", None)
+        usage = getattr(response, "usage", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        total_tokens = getattr(usage, "total_tokens", None)
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(completion_details, "reasoning_tokens", None)
+        parts = [f"response_id={response_id}"]
+        if request_id:
+            parts.append(f"request_id={request_id}")
+        if finish_reason:
+            parts.append(f"finish_reason={finish_reason}")
+        if completion_tokens is not None:
+            parts.append(f"completion_tokens={completion_tokens}")
+        if total_tokens is not None:
+            parts.append(f"total_tokens={total_tokens}")
+        if reasoning_tokens is not None:
+            parts.append(f"reasoning_tokens={reasoning_tokens}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _should_retry(exc: Exception) -> bool:
+        if isinstance(exc, LLMResponseError):
+            return exc.retryable
+        status_code = getattr(exc, "status_code", None)
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        should_retry = headers.get("x-should-retry") if headers else None
+        if should_retry == "true":
+            return True
+        if should_retry == "false":
+            return False
+        if isinstance(status_code, int):
+            return status_code in {408, 409, 425, 429} or status_code >= 500
+        if isinstance(exc, APIConnectionError):
+            return True
+        if isinstance(exc, APIStatusError):
+            return False
+        if isinstance(exc, (ValueError, TypeError, KeyError, AssertionError)):
+            return False
+        # Preserve compatibility with OpenAI-compatible gateways that wrap
+        # transport failures in their own exception class.
+        return True
+
+    def _wait_before_retry(
+        self,
+        exc: Exception,
+        attempt: int,
+        total_attempts: int,
+        elapsed: float,
+    ) -> None:
+        delay = self._retry_after_seconds(exc)
+        if delay is None:
+            base = min(
+                config.API_RETRY_BASE_DELAY * (2 ** attempt),
+                config.API_RETRY_MAX_DELAY,
+            )
+            spread = max(0.0, base * config.API_RETRY_JITTER)
+            delay = max(0.0, base + random.uniform(-spread, spread))
+        delay = min(delay, config.API_RETRY_MAX_DELAY)
+        print(
+            f"[{self.name}] API 第 {attempt + 1}/{total_attempts} 次请求失败："
+            f"{self._error_detail(exc)}；本次耗时 {elapsed:.2f}s；"
+            f"{delay:.2f}s 后重试",
+            file=sys.stderr,
+        )
+        time.sleep(delay)
+
+    @staticmethod
+    def _retry_after_seconds(exc: Exception) -> Optional[float]:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if not headers:
+            return None
+        retry_ms = headers.get("retry-after-ms")
+        if retry_ms is not None:
+            try:
+                value = float(retry_ms) / 1000
+                return value if value > 0 else None
+            except (TypeError, ValueError):
+                pass
+        retry_after = headers.get("retry-after")
+        if retry_after is None:
+            return None
+        try:
+            value = float(retry_after)
+            return value if value > 0 else None
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(str(retry_after))
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                value = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                return value if value > 0 else None
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+    def _increase_token_budget(
+        self,
+        kwargs: Dict[str, Any],
+        exc: LLMResponseError,
+    ) -> None:
+        key = (
+            "max_completion_tokens"
+            if "max_completion_tokens" in kwargs
+            else "max_tokens"
+        )
+        current = int(kwargs.get(key, config.MAX_TOKENS))
+        token_limited = exc.finish_reason == "length"
+        if exc.completion_tokens is not None:
+            token_limited = token_limited or exc.completion_tokens >= current * 0.9
+        if exc.reasoning_tokens is not None:
+            token_limited = token_limited or exc.reasoning_tokens >= current * 0.8
+        if not token_limited:
+            return
+        ceiling = max(config.MAX_TOKENS, config.MAX_RETRY_TOKENS)
+        increased = min(max(current + 1024, current * 2), ceiling)
+        if increased <= current:
+            return
+        kwargs[key] = increased
+        print(
+            f"[{self.name}] 响应因 token 上限截断，将 {key} "
+            f"从 {current} 提高到 {increased}",
+            file=sys.stderr,
+        )
+
+    @staticmethod
+    def _error_detail(exc: Optional[Exception]) -> str:
+        if exc is None:
+            return "unknown error"
+        status_code = getattr(exc, "status_code", None)
+        request_id = getattr(exc, "request_id", None)
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if not request_id and headers:
+            request_id = headers.get("x-request-id")
+        parts = [f"{type(exc).__name__}: {exc}"]
+        if status_code is not None:
+            parts.append(f"status={status_code}")
+        if request_id:
+            parts.append(f"request_id={request_id}")
+        return ", ".join(parts)
 
     def _call_llm(
         self,
