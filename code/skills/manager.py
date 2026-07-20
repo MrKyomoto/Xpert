@@ -74,12 +74,17 @@ class SkillManager:
     def available_names(self) -> List[str]:
         return [skill.name for skill in self._index]
 
-    def index_text(self) -> str:
+    def index_text(self, exclude: Optional[set] = None) -> str:
         if not self._index:
             return f"（角色 {self.role_id} 暂无可用技能）"
+        exclude = exclude or set()
         lines = [f"角色 {self.role_id} 可用技能:"]
         for s in self._index:
+            if s.name in exclude:
+                continue
             lines.append(f"  - {s.name}: {s.description}")
+        if len(lines) <= 1:
+            return ""
         return "\n".join(lines)
 
     def load_skill(self, name: str) -> Optional[str]:
