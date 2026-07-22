@@ -19,7 +19,6 @@ venv/
 
 # Project outputs (generated)
 outputs_practice/
-code/logs/*.log
 
 report/
 ai_collab/
