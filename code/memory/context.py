@@ -50,8 +50,17 @@ class ContextManager:
         # Update messages
         self.messages = system_msgs + [{"role": "system", "content": "--- Context compressed ---"}] + recent_msgs
 
+    def save_checkpoint(self):
+        """保存当前消息列表长度，供后续回滚时截断。"""
+        self._checkpoint = len(self.messages)
+
+    def restore_checkpoint(self):
+        """将消息列表截断回最近一次 save_checkpoint 时的状态。"""
+        if hasattr(self, '_checkpoint') and self._checkpoint is not None:
+            self.messages = self.messages[:self._checkpoint]
+
     def to_json(self) -> str:
         return json.dumps(self.messages, ensure_ascii=False, indent=2)
-        
+
     def load_json(self, json_str: str):
         self.messages = json.loads(json_str)

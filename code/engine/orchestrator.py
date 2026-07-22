@@ -78,6 +78,7 @@ class Orchestrator:
 
     MAX_ITERATIONS = 5
     MAX_OPINION_RETRY = 2  # 每轮专家拉取意见失败后的重试次数
+    MAX_ROLLBACKS = 2      # 累计回滚次数上限
     OPINION_MARKER = "---OPINION---"
     POLISHED_MARKER = "---POLISHED---"
 
@@ -108,10 +109,23 @@ class Orchestrator:
         prev_opinions_text: Dict[str, str] = {}
         run_start = time.monotonic()
 
+        # ── 最佳版本追踪变量 ──
+        best_lesson = lesson
+        best_score = 0
+        best_round = 0
+        best_opinions_text: Dict[str, str] = {}
+        best_feedback = ""
+        rollback_count = 0
+        is_rollback_recovery = False
+
         print(f"\n启动多 Expert 圆桌打磨（最多 {self.MAX_ITERATIONS} 轮）")
         print("=" * 60)
 
         for round_i in range(1, self.MAX_ITERATIONS + 1):
+            # 每轮开始时保存各 Agent 上下文快照
+            for agent in [*self.experts.values(), self.chair, self.judge]:
+                agent.context.save_checkpoint()
+
             rec = RoundRecord(round=round_i)
             rec.prev_feedback = prev_feedback
             print(f"\n▶ 第 {round_i} 轮 — 圆桌研讨\n")
@@ -133,17 +147,9 @@ class Orchestrator:
                     if refs:
                         msg += f"\n\n其他专家的意见供参考：\n{refs}"
                 # 非流式调用（支持 load_skill 工具调用）
-                # 根据上一轮分数动态调整 temperature
-                temp = 0.7
-                if prev_total_score is not None:
-                    if prev_total_score >= 90:
-                        temp = 0.3
-                    elif prev_total_score >= 80:
-                        temp = 0.5
-                    elif prev_total_score >= 70:
-                        temp = 0.7
-                    else:
-                        temp = 0.9
+                temp = self._compute_temperature(prev_total_score, recovery=is_rollback_recovery)
+                if is_rollback_recovery:
+                    msg += self._rollback_notice()
                 last_err = None
                 for attempt in range(3):
                     try:
@@ -189,16 +195,7 @@ class Orchestrator:
             print(f"\n  [{CHAIR_ROLE[1]}] 汇总合并中...")
             t0 = time.monotonic()
             # Chair 的 temperature 也动态调整
-            chair_temp = 0.7
-            if prev_total_score is not None:
-                if prev_total_score >= 90:
-                    chair_temp = 0.3
-                elif prev_total_score >= 80:
-                    chair_temp = 0.5
-                elif prev_total_score >= 70:
-                    chair_temp = 0.7
-                else:
-                    chair_temp = 0.9
+            chair_temp = self._compute_temperature(prev_total_score, recovery=is_rollback_recovery)
             chair_msg = "以下是多位专家对同一教案的修改意见，请进行冲突检测、合并，并输出打磨后的完整教案。\n\n"
             for op in rec.opinions:
                 chair_msg += f"--- {op.name} ({op.role_id}) ---\n{op.opinions_text}\n\n"
@@ -206,6 +203,8 @@ class Orchestrator:
                 chair_msg += f"上一轮总分: {prev_total_score}/100。高分（≥85）建议保守微调，低分（<85）可大胆重构。\n"
             if prev_feedback:
                 chair_msg += f"上一轮评审反馈: {prev_feedback}\n\n"
+            if is_rollback_recovery:
+                chair_msg += self._rollback_notice()
             chair_msg += "\n当前教案原文：\n\n" + current_lesson
 
             chair_full = self.chair.chat(chair_msg, temperature=chair_temp)
@@ -274,20 +273,60 @@ class Orchestrator:
 
             records.append(rec)
 
-            # 更新上一轮的意见（供下一轮引用）
-            prev_opinions_text = {op.role_id: op.opinions_text for op in rec.opinions}
-            prev_total_score = total
+            # ── 最佳版本追踪 & 回滚判断 ──
+            is_rollback_recovery = False
 
+            if best_score == 0:
+                best_lesson = rec.polished
+                best_score = total
+                best_round = round_i
+                best_opinions_text = {op.role_id: op.opinions_text for op in rec.opinions}
+                best_feedback = judge_data.get("overall_feedback", "")
+
+            elif total > best_score:
+                best_lesson = rec.polished
+                best_score = total
+                best_round = round_i
+                best_opinions_text = {op.role_id: op.opinions_text for op in rec.opinions}
+                best_feedback = judge_data.get("overall_feedback", "")
+
+            elif total < best_score:
+                rollback_count += 1
+                if rollback_count > self.MAX_ROLLBACKS:
+                    print(f"  ⚠ 回滚 {self.MAX_ROLLBACKS} 次已达上限，强制终止。取第 {best_round} 轮（{best_score} 分）。")
+                    rec.polished = best_lesson
+                    break
+
+                print(f"  ⚠ 第 {round_i} 轮评分 {total} < 历史最高 {best_score}（第 {best_round} 轮）→ 回滚")
+                print(f"    教案版本 → 第 {best_round} 轮, Agent 上下文 → 本轮开始前。回滚 {rollback_count}/{self.MAX_ROLLBACKS}")
+
+                current_lesson = best_lesson
+                for agent in [*self.experts.values(), self.chair, self.judge]:
+                    agent.context.restore_checkpoint()
+
+                prev_total_score = best_score
+                prev_feedback = best_feedback
+                prev_opinions_text = best_opinions_text
+                is_rollback_recovery = True
+                rec.judge_result["_rollback"] = {
+                    "triggered": True, "rollback_count": rollback_count,
+                    "score_dropped_to": total, "restored_to_round": best_round,
+                    "restored_score": best_score,
+                }
+                continue
+
+            # 非回滚轮的正常推进
             if should_stop:
                 print(f"\n  ✓ 达到终止条件，打磨完成。")
                 break
 
             current_lesson = rec.polished
             prev_feedback = judge_data.get("overall_feedback", "")
+            prev_opinions_text = {op.role_id: op.opinions_text for op in rec.opinions}
+            prev_total_score = total
 
-        # ── 最终输出 ──
-        final_rec = records[-1]
-        final_lesson = final_rec.polished
+        # ── 最终输出（取历史最佳版本）──
+        final_lesson = best_lesson
         run_elapsed = time.monotonic() - run_start
         print("\n" + "=" * 60)
         print(f"最终教案 (总耗时 {run_elapsed:.0f}s = {run_elapsed/60:.1f} 分钟):\n")
@@ -349,6 +388,9 @@ class Orchestrator:
             "meta": {
                 "student_id": student_id, "sample_id": sample_id,
                 "timestamp": datetime.datetime.now().astimezone().isoformat(),
+                "best_score": best_score,
+                "best_round": best_round,
+                "total_rollbacks": rollback_count,
             },
             "roles": all_roles,
             "discussion": discussion,
@@ -358,6 +400,32 @@ class Orchestrator:
         return final_lesson, process
 
     # ── 辅助方法 ──
+
+    @staticmethod
+    def _compute_temperature(score: Optional[int], recovery: bool = False) -> float:
+        """根据上一轮总分计算 temperature。recovery=True 时降一档。"""
+        if score is None:
+            base = 0.7
+        elif score >= 90:
+            base = 0.3
+        elif score >= 80:
+            base = 0.5
+        elif score >= 70:
+            base = 0.7
+        else:
+            base = 0.9
+        if recovery:
+            downgrade = {0.3: 0.15, 0.5: 0.3, 0.7: 0.5, 0.9: 0.7}
+            return downgrade.get(base, base)
+        return base
+
+    def _rollback_notice(self) -> str:
+        return (
+            f"\n\n⚠️ 上一轮修改已被回滚：评分从 {self.best_score} 降至本轮分数，"
+            f"教案已恢复至第 {self.best_round} 轮的最高分版本。\n"
+            f"本轮请仅针对 Judge 反馈中的低分维度做小步幅修改，避免大范围重构。"
+            f"（回滚 {self.rollback_count}/{self.MAX_ROLLBACKS}）"
+        )
 
     def _parse_expert_response(self, full: str) -> Tuple[str, str]:
         """从专家响应中切分 thinking 和 opinions_text。"""
