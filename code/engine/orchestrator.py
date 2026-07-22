@@ -19,10 +19,11 @@ JUDGE_ROLE = ("r_judge", "评审专家")
 class ExpertOpinion:
     role_id: str
     name: str
-    thinking: str      # 分析思考文本
-    opinions_text: str # ---OPINION--- 之后的意见列表
-    elapsed: float = 0.0  # API 调用耗时（秒）
-    refers_to: Optional[str] = None  # 引用上一轮的角色意见
+    thinking: str
+    opinions_text: str
+    elapsed: float = 0.0
+    temperature: float = 0.7
+    refers_to: Optional[str] = None
 
 
 @dataclass
@@ -104,8 +105,8 @@ class Orchestrator:
         current_lesson = lesson
         prev_feedback = ""
         prev_total_score: Optional[int] = None
-        # 上一轮各专家的意见文本（用于互评引用）
         prev_opinions_text: Dict[str, str] = {}
+        run_start = time.monotonic()
 
         print(f"\n启动多 Expert 圆桌打磨（最多 {self.MAX_ITERATIONS} 轮）")
         print("=" * 60)
@@ -152,7 +153,7 @@ class Orchestrator:
                         return ExpertOpinion(
                             role_id=rid, name=rname,
                             thinking=thinking, opinions_text=opinions_text,
-                            elapsed=elapsed,
+                            elapsed=elapsed, temperature=temp,
                             refers_to=f"r{round_i-1}:{list(prev_opinions_text.keys())[0]}" if prev_opinions_text and round_i > 1 else None,
                         )
                     except Exception as e:
@@ -174,7 +175,7 @@ class Orchestrator:
                 for f in concurrent.futures.as_completed(futures):
                     op = f.result()
                     rec.opinions.append(op)
-                    print(f"╔══ {op.name} ═══ {datetime.datetime.now().strftime('%H:%M:%S')} （用时 {op.elapsed:.1f}s）")
+                    print(f"╔══ {op.name} ═══ {datetime.datetime.now().strftime('%H:%M:%S')} （用时 {op.elapsed:.1f}s, temperature={op.temperature}）")
                     print(op.thinking)
                     if op.opinions_text.strip():
                         print(f"── 修改意见 ──")
@@ -187,13 +188,28 @@ class Orchestrator:
             # ── Step 2: 主持人汇总合并 ──
             print(f"\n  [{CHAIR_ROLE[1]}] 汇总合并中...")
             t0 = time.monotonic()
+            # Chair 的 temperature 也动态调整
+            chair_temp = 0.7
+            if prev_total_score is not None:
+                if prev_total_score >= 90:
+                    chair_temp = 0.3
+                elif prev_total_score >= 80:
+                    chair_temp = 0.5
+                elif prev_total_score >= 70:
+                    chair_temp = 0.7
+                else:
+                    chair_temp = 0.9
             chair_msg = "以下是多位专家对同一教案的修改意见，请进行冲突检测、合并，并输出打磨后的完整教案。\n\n"
             for op in rec.opinions:
                 chair_msg += f"--- {op.name} ({op.role_id}) ---\n{op.opinions_text}\n\n"
+            if prev_total_score is not None:
+                chair_msg += f"上一轮总分: {prev_total_score}/100。高分（≥85）建议保守微调，低分（<85）可大胆重构。\n"
+            if prev_feedback:
+                chair_msg += f"上一轮评审反馈: {prev_feedback}\n\n"
             chair_msg += "\n当前教案原文：\n\n" + current_lesson
 
-            chair_full = self.chair.chat(chair_msg)
-            print(f"  [{CHAIR_ROLE[1]}] 用时 {time.monotonic() - t0:.1f}s")
+            chair_full = self.chair.chat(chair_msg, temperature=chair_temp)
+            print(f"  [{CHAIR_ROLE[1]}] 用时 {time.monotonic() - t0:.1f}s (temperature={chair_temp})")
 
             # Chair 的输出格式：思考 → ---POLISHED--- → 教案
             if self.POLISHED_MARKER in chair_full:
@@ -272,8 +288,9 @@ class Orchestrator:
         # ── 最终输出 ──
         final_rec = records[-1]
         final_lesson = final_rec.polished
+        run_elapsed = time.monotonic() - run_start
         print("\n" + "=" * 60)
-        print("最终教案:\n")
+        print(f"最终教案 (总耗时 {run_elapsed:.0f}s = {run_elapsed/60:.1f} 分钟):\n")
         print(final_lesson)
 
         # ── 构建 process.json ──
