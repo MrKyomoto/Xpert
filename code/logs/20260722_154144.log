@@ -1,0 +1,45 @@
+
+启动多 Expert 圆桌打磨（最多 5 轮）
+============================================================
+
+▶ 第 1 轮 — 圆桌研讨
+
+╔══ 素养导向教研员 ═══ 15:41:50 （用时 1.2s, temperature=0.7）
+
+── 修改意见 ──
+Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['qwen3.6-reasoner', 'deepseek-v4-pro', 'glm-5.2', 'qwen3.6-chat', 'deepseek-v4-flash-ascend1', 'glm-reasoner', 'glm-chat', 'qwen-chat', 'deepseek-v4-flash-ascend', 'qwen-reasoner']. Tried to access deepseek-v4-flash", 'type': 'key_model_access_denied', 'param': 'model', 'code': '403'}}
+╔══ 学科内容专家 ═══ 15:41:50 （用时 1.2s, temperature=0.7）
+
+── 修改意见 ──
+Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['deepseek-v4-pro', 'qwen-chat', 'qwen3.6-chat', 'deepseek-v4-flash-ascend', 'glm-reasoner', 'glm-chat', 'glm-5.2', 'qwen3.6-reasoner', 'deepseek-v4-flash-ascend1', 'qwen-reasoner']. Tried to access deepseek-v4-flash", 'type': 'key_model_access_denied', 'param': 'model', 'code': '403'}}
+╔══ 学情适配专家 ═══ 15:41:50 （用时 1.2s, temperature=0.7）
+
+── 修改意见 ──
+Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['qwen-chat', 'deepseek-v4-flash-ascend', 'qwen3.6-chat', 'glm-chat', 'deepseek-v4-flash-ascend1', 'qwen3.6-reasoner', 'glm-5.2', 'glm-reasoner', 'deepseek-v4-pro', 'qwen-reasoner']. Tried to access deepseek-v4-flash", 'type': 'key_model_access_denied', 'param': 'model', 'code': '403'}}
+
+  [主持人] 汇总合并中...
+  [主持人] 用时 0.3s (temperature=0.7)
+    ✓ 合并完成
+
+  合并后教案预览（前200字）:
+    Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['glm-5.2', 'qwen3.6-reasoner', 'deepseek-v4-flash-ascend', ...
+
+  [评审专家] 评审中...
+  [DEBUG] Judge 返回 0 分（第1次），原始响应前300字: Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['glm-5.2', 'glm-chat', 'qwen-reasoner', 'qwen3.6-chat', 'deepseek-v4-flash-ascend1', 'qwen-chat', 'deepseek-v4-pro', 'deepseek-v4-flash-ascend', 'qwen3.6-reaso
+  重试...
+  [DEBUG] Judge 返回 0 分（第2次），原始响应前300字: Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['qwen3.6-reasoner', 'deepseek-v4-flash-ascend1', 'glm-5.2', 'deepseek-v4-flash-ascend', 'qwen-chat', 'glm-reasoner', 'qwen3.6-chat', 'qwen-reasoner', 'deepseek
+  重试...
+  评审用时 2.4s
+  总分: 0/100 (上一轮: -) | should_stop: False
+  评分明细: A=0, B=0, C=0, D=0, E=0, F=0
+
+▶ 第 2 轮 — 圆桌研讨
+
+╔══ 学科内容专家 ═══ 15:41:53 （用时 0.2s, temperature=0.9）
+
+── 修改意见 ──
+Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['qwen3.6-chat', 'qwen-chat', 'glm-chat', 'glm-reasoner', 'qwen-reasoner', 'deepseek-v4-pro', 'deepseek-v4-flash-ascend1', 'deepseek-v4-flash-ascend', 'glm-5.2', 'qwen3.6-reasoner']. Tried to access deepseek-v4-flash", 'type': 'key_model_access_denied', 'param': 'model', 'code': '403'}}
+╔══ 学情适配专家 ═══ 15:41:53 （用时 0.2s, temperature=0.9）
+
+── 修改意见 ──
+Error communicating with LLM API: Error code: 403 - {'error': {'message': "key not allowed to access model. This key can only access models=['glm-chat', 'deepseek-v4-flash-ascend1', 'glm-5.2', 'deepseek-v4-pro', 'qwen3.6-chat', 'qwen-reasoner', 'qwen3.6-reasoner', 'glm-reasoner', 'deepseek-v4-flash-ascend', 'qwen-chat']. Tried to access deepseek-v4-flash", 'type': 'key_model_access_denied', 'param': 'model', 'code': '403'}}
