@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "student_id": "demo001",
+    "sample_id": "MATH03",
+    "timestamp": "2026-07-31T19:13:27.270185+08:00",
+    "mode": "baseline_single_agent",
+    "total_score": 88
+  },
+  "roles": [
+    {
+      "role_id": "r_expert",
+      "name": "教案打磨专家",
+      "expertise": "教案打磨与改写"
+    },
+    {
+      "role_id": "r_judge",
+      "name": "评审专家",
+      "expertise": "教案质量评审"
+    }
+  ],
+  "discussion": [],
+  "modifications": []
+}
