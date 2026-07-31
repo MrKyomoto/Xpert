@@ -17,11 +17,6 @@ venv/
 .env
 !.env.example
 
-# Project outputs (generated)
-outputs_practice/
-
-report/
-ai_collab/
 
 # OS
 .DS_Store
