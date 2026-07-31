@@ -7,8 +7,8 @@
 ```bash
 # 1. 创建虚拟环境并安装依赖
 python -m venv venv
-# Windows
-source venv/Scripts/activate
+# Windows Powershell
+venv/Scripts/activate
 # Linux/macOS
 # source venv/bin/activate
 pip install -r requirements.txt
@@ -17,16 +17,13 @@ pip install -r requirements.txt
 cp .env.example .env        # 根据自己的实际 api(走的是openai格式) 和 模型填入 API_KEY 以及 MODEL
 
 # 3. 打磨模式
-python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out outputs/
+python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out outputs_practice/
 
 # 4. 仅评审模式（直接打分不打磨）
-python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out outputs/
+python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out outputs_practice/ --judge
 
-# 3. 仅评审模式（直接打分不打磨）
-python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out outputs/ --judge
-
-# 4. 生成可视化报告
-python code/tools/viz.py outputs/demo001_MATH01_process.json
+# 5. 生成可视化报告
+python code/tools/viz.py outputs_practice/demo001_MATH01_process.json
 ```
 
 ### ⚠️ 关于 profile（学情描述）文件

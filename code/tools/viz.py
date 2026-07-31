@@ -76,6 +76,17 @@ def gen(process_path: str, out_path: str = ""):
                     conflict_count += 1
                     break
 
+    # 计算自适应 y 轴范围
+    all_vals = []
+    for k in list("ABCDEF") + ["总分"]:
+        vals = scores_by_dim.get(k, {})
+        all_vals.extend(vals.values())
+    if all_vals:
+        y_min = max(0, int(min(all_vals) / 10) * 10 - 10)
+        y_max = min(100, int((max(all_vals) + 9) / 10) * 10 + 10)
+    else:
+        y_min, y_max = 0, 100
+
     # 角色映射
     role_map = {r["role_id"]: r["name"] for r in roles}
 
@@ -171,7 +182,7 @@ chart1.setOption({{
     legend:{{bottom:0,textStyle:{{fontSize:12}}}},
     grid:{{left:40,right:20,bottom:40,top:20}},
     xAxis:{{type:'category',data:[{','.join(str(r) for r in score_rounds)}]}},
-    yAxis:{{type:'value',min:0,max:100}},
+    yAxis:{{type:'value',min:{y_min},max:{y_max}}},
     series:[{score_series}]
 }});
 var chart2 = echarts.init(document.getElementById('chartPie'));
