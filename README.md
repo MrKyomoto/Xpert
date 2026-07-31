@@ -17,13 +17,13 @@ pip install -r requirements.txt
 cp .env.example .env        # 根据自己的实际 api(走的是openai格式) 和 模型填入 API_KEY 以及 MODEL
 
 # 3. 打磨模式
-python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out outputs_practice/
+python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out code/outputs_practice/
 
 # 4. 仅评审模式（直接打分不打磨）
-python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out outputs_practice/ --judge
+python code/run.py --lesson code/examples/inputs/demo001_MATH01.md --profile code/examples/profile_minimal.yaml --out code/outputs_practice/ --judge
 
 # 5. 生成可视化报告
-python code/tools/viz.py outputs_practice/demo001_MATH01_process.json
+python code/tools/viz.py code/outputs_practice/demo001_MATH01_process.json
 ```
 
 ### ⚠️ 关于 profile（学情描述）文件
@@ -62,12 +62,22 @@ student_id: "demo001"   # 唯一生效字段，须与教案文件名前缀一致
 │   │   ├── registry.py           # 工具注册表
 │   │   ├── logger.py             # 日志捕获（Tee）
 │   │   └── viz.py                # process.json → HTML 可视化
-│   └── examples/inputs/          # 示例教案（16 份）
-├── outputs_practice/             # 磨课输出（公开练习三元组产物）
+│   ├── examples/inputs/          # 示例教案（16 份）
+│   └── outputs_practice/         # 磨课输出（公开练习三元组产物）
 ├── report/                       # 技术报告
 ├── ai_collab/                    # AI 协作记录
 └── logs/                         # 运行日志
 ```
+
+## 附录 D 提交物清单对应
+
+| # | 提交物 | 对应位置 |
+|---|--------|---------|
+| 1 | 代码工程（含 CLI 入口） | `code/` 下全部源码，`run.py` 为统一入口 |
+| 2 | 样本级产物（磨课输出） | `code/outputs_practice/{学号}_{样本ID}_polished.md` + `_process.json` |
+| 3 | 技术报告 | `report/设计方案.md` |
+| 4 | AI 协作开发记录 | `ai_collab/`（含 CLAUDE.md、note.md、prompts/key_prompts.md） |
+| 5 | 运行日志 | `code/logs/{时间戳}.log` |
 
 ## 角色
 
